@@ -1,6 +1,8 @@
-# BTC Strategy Backtester V33
+# AlphaRise
 
-A React-based Bitcoin strategy backtesting application that compares the V_DCA (Variable Dollar-Cost Averaging) strategy against standard DCA and HODL strategies.
+**AlphaRise** is an advanced Bitcoin strategy backtesting platform that enables investors to test and optimize dynamic investment strategies. The application compares the innovative V_DCA (Variable Dollar-Cost Averaging) strategy against traditional DCA and HODL approaches, providing data-driven insights into portfolio performance across different market conditions.
+
+AlphaRise uses real-time Bitcoin price data and technical indicators (CBBI, EMA) to dynamically adjust buying behavior, helping users identify optimal entry and exit points while maintaining risk-adjusted returns through comprehensive metrics analysis.
 
 ## Features
 
@@ -18,7 +20,10 @@ npm install
 ```
 
 2. Add your Gemini API key (optional, for AI analysis):
-   - Edit `src/utils/api.js` and add your API key to the `apiKey` variable
+   - Create a `.env` file in either the project root directory or the parent directory
+   - Add: `VITE_GEMINI_API_KEY=your_api_key_here`
+   - If both locations have `.env` files, the project root `.env` takes priority
+   - Get your API key from: https://makersuite.google.com/app/apikey
 
 3. Start the development server:
 ```bash
