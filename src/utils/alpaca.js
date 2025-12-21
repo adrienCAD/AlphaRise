@@ -147,7 +147,7 @@ export async function placeBuyOrder(symbol, notional, dryRun = true) {
         notional: notional.toFixed(2),
         side: 'buy',
         type: 'market',
-        time_in_force: 'day'
+        time_in_force: 'gtc' // Crypto orders require 'gtc' (good till canceled), not 'day'
       })
     });
 
@@ -206,7 +206,7 @@ export async function placeSellOrder(symbol, qty, dryRun = true) {
         qty: qty.toFixed(6),
         side: 'sell',
         type: 'market',
-        time_in_force: 'day'
+        time_in_force: 'gtc' // Crypto orders require 'gtc' (good till canceled), not 'day'
       })
     });
 

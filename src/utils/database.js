@@ -83,7 +83,13 @@ export function saveDatabase() {
   try {
     const data = db.export();
     // Convert Uint8Array to base64 for browser compatibility
-    const binary = String.fromCharCode.apply(null, data);
+    // Use chunked conversion to avoid "Maximum call stack size exceeded" error
+    const chunkSize = 8192; // Process in chunks
+    let binary = '';
+    for (let i = 0; i < data.length; i += chunkSize) {
+      const chunk = data.slice(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk);
+    }
     const base64 = btoa(binary);
     localStorage.setItem('alpharise_db', base64);
   } catch (err) {
