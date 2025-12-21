@@ -11,6 +11,7 @@ AlphaRise uses real-time Bitcoin price data and technical indicators (CBBI, EMA)
 - **Interactive Charts**: Visualizes portfolio performance, cash reserves, and price movements using Plotly
 - **AI Analysis**: Optional Gemini AI-powered strategy analysis
 - **Risk Metrics**: Calculates Sharpe ratio, Sortino ratio, and annualized returns
+- **Alpaca Integration**: Paper trading integration to execute the V_DCA strategy automatically on Alpaca
 
 ## Setup
 
@@ -19,11 +20,16 @@ AlphaRise uses real-time Bitcoin price data and technical indicators (CBBI, EMA)
 npm install
 ```
 
-2. Add your Gemini API key (optional, for AI analysis):
+2. Add your API keys (optional):
    - Create a `.env` file in either the project root directory or the parent directory
-   - Add: `VITE_GEMINI_API_KEY=your_api_key_here`
+   - **Gemini API** (for AI analysis):
+     - Add: `VITE_GEMINI_API_KEY=your_api_key_here`
+     - Get your API key from: https://makersuite.google.com/app/apikey
+   - **Alpaca API** (for paper trading):
+     - Add: `VITE_ALPACA_API_KEY=your_paper_api_key_here`
+     - Add: `VITE_ALPACA_SECRET_KEY=your_paper_secret_key_here`
+     - Get your keys from: https://app.alpaca.markets/paper/dashboard/overview
    - If both locations have `.env` files, the project root `.env` takes priority
-   - Get your API key from: https://makersuite.google.com/app/apikey
 
 3. Start the development server:
 ```bash
@@ -51,6 +57,39 @@ npm run build
 - **Zone 2 (Neutral)**: Standard DCA
 - **Zone 3 (Reduction)**: Price > EMA20 & CBBI > t3 - Reduced buying + selling
 
+## Database
+
+AlphaRise uses **SQLite** (via sql.js) to store time-series data locally in the browser:
+
+- **Market Data**: BTCUSD price, CBBI index, and calculated EMAs (20, 50, 100)
+- **Daily Analysis**: Zones (1-3), tiers, recommendations, and calculated metrics
+- **Storage**: Data is persisted in browser localStorage
+- **ETL Process**: Automatically fetches and stores data from the API on each load
+
+The database is automatically initialized on first use and persists across browser sessions. All data is stored locally in your browser.
+
+## Alpaca Paper Trading
+
+AlphaRise integrates with Alpaca Paper Trading to execute the V_DCA strategy automatically:
+
+- **Test Connection**: Verify your Alpaca API credentials
+- **Execute Strategy**: Run the strategy for today based on current market conditions
+- **Dry Run Mode**: Test strategy execution without placing real orders (default)
+- **Live Mode**: Toggle to place actual orders (use with caution)
+
+**How it works:**
+1. Export daily analysis to generate today's recommendation
+2. Click "Test Connection" to verify API credentials
+3. Toggle "Dry Run" mode (recommended for testing)
+4. Click "Execute Strategy" to run the strategy for today
+
+The strategy uses your current V_DCA parameters (baseDCA, f1, f3, sellFactor) and today's zone recommendation to:
+- **Zone 1 (Accumulate)**: Buy `baseDCA × f1` + drain cash reserves
+- **Zone 2 (Neutral)**: Buy `baseDCA` (standard DCA)
+- **Zone 3 (Reduce)**: Buy `baseDCA × f3` (usually $0) + sell `sellFactor%` of holdings
+
+**Note**: Make sure you have exported daily analysis for today before executing the strategy.
+
 ## Technologies
 
 - React 18
@@ -58,6 +97,7 @@ npm run build
 - Plotly.js (via CDN)
 - Tailwind CSS (via CDN)
 - Marked (for markdown rendering)
+- SQLite (sql.js) - Browser-based database for time-series data
 
 ## Usage
 

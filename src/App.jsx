@@ -2,9 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { fetchRealData } from './utils/data';
 import { runStrategies } from './utils/strategies';
 import { callGemini } from './utils/api';
+import { 
+  exportMarketDataCSV, 
+  exportMarketDataJSON,
+  exportDailyAnalysisCSV,
+  exportDailyAnalysisJSON 
+} from './utils/database';
+import { 
+  testAlpacaConnection, 
+  executeStrategy 
+} from './utils/alpaca';
 import RecommendationCard from './components/RecommendationCard';
 import StrategyCard from './components/StrategyCard';
 import Charts from './components/Charts';
+import ExportProgress from './components/ExportProgress';
 import { marked } from 'marked';
 
 function App() {
@@ -30,6 +41,11 @@ function App() {
   const [aiSummary, setAiSummary] = useState("");
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [exportProgress, setExportProgress] = useState(null);
+  const [alpacaStatus, setAlpacaStatus] = useState(null);
+  const [alpacaTesting, setAlpacaTesting] = useState(false);
+  const [alpacaExecuting, setAlpacaExecuting] = useState(false);
+  const [dryRun, setDryRun] = useState(true); // Safety: default to dry run
 
   useEffect(() => {
     fetchRealData().then(data => {
@@ -40,6 +56,9 @@ function App() {
       }
     });
   }, []);
+
+  // Removed auto-recalculation - now calculated on-demand during export only
+  // This improves performance by not recalculating on every slider/date change
 
   useEffect(() => {
     if (fullData.length === 0) return;
@@ -76,6 +95,51 @@ function App() {
     const response = await callGemini(prompt);
     setAiSummary(response);
     setLoadingSummary(false);
+  };
+
+  const handleTestConnection = async () => {
+    setAlpacaTesting(true);
+    setAlpacaStatus(null);
+    
+    try {
+      const result = await testAlpacaConnection();
+      setAlpacaStatus(result);
+    } catch (error) {
+      setAlpacaStatus({
+        success: false,
+        error: error.message
+      });
+    } finally {
+      setAlpacaTesting(false);
+    }
+  };
+
+  const handleExecuteStrategy = async () => {
+    if (!dryRun && !confirm('⚠️ LIVE TRADING MODE: This will place real orders. Continue?')) {
+      return;
+    }
+
+    setAlpacaExecuting(true);
+    setAlpacaStatus(null);
+    
+    try {
+      const result = await executeStrategy(
+        baseDCA,
+        f1,
+        f3,
+        sellFactor,
+        'BTCUSD', // Adjust symbol if needed for your Alpaca account
+        dryRun
+      );
+      setAlpacaStatus(result);
+    } catch (error) {
+      setAlpacaStatus({
+        success: false,
+        error: error.message
+      });
+    } finally {
+      setAlpacaExecuting(false);
+    }
   };
 
   const setRange = (months) => {
@@ -277,6 +341,198 @@ function App() {
             <div dangerouslySetInnerHTML={{ __html: marked.parse(aiSummary) }} />
           </div>
         </div>
+      )}
+
+      {/* Alpaca Trading Integration */}
+      <div className="card p-4 mt-6 bg-slate-900/50 border-slate-700">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-slate-300 font-bold text-sm uppercase">Alpaca Paper Trading</h3>
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="dryRunToggle"
+              checked={dryRun}
+              onChange={e => setDryRun(e.target.checked)}
+              className="w-4 h-4 accent-blue-500 rounded"
+            />
+            <label htmlFor="dryRunToggle" className="text-xs text-slate-300 cursor-pointer">
+              {dryRun ? '🧪 Dry Run' : '⚠️ LIVE MODE'}
+            </label>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <button
+              onClick={handleTestConnection}
+              disabled={alpacaTesting}
+              className="btn btn-inactive text-xs px-4 py-2 flex-1"
+            >
+              {alpacaTesting ? '⏳ Testing...' : '🔌 Test Connection'}
+            </button>
+            <button
+              onClick={handleExecuteStrategy}
+              disabled={alpacaExecuting || (alpacaStatus && !alpacaStatus.success)}
+              className="btn btn-inactive text-xs px-4 py-2 flex-1 bg-green-600/20 hover:bg-green-600/30 disabled:opacity-50"
+            >
+              {alpacaExecuting ? '⏳ Executing...' : '📤 Execute Strategy'}
+            </button>
+          </div>
+
+          {alpacaStatus && (
+            <div className={`p-3 rounded text-xs ${
+              alpacaStatus.success 
+                ? 'bg-green-900/30 border border-green-700/50' 
+                : 'bg-red-900/30 border border-red-700/50'
+            }`}>
+              {alpacaStatus.success ? (
+                <div className="space-y-2">
+                  {alpacaStatus.account && (
+                    <div>
+                      <p className="text-green-400 font-semibold">✅ Connection Successful</p>
+                      <p className="text-slate-300 mt-1">
+                        Cash: ${alpacaStatus.account.cash.toFixed(2)} | 
+                        Buying Power: ${alpacaStatus.account.buyingPower.toFixed(2)}
+                        {alpacaStatus.account.btcBefore !== undefined && (
+                          <> | BTC: {alpacaStatus.account.btcBefore.toFixed(6)}</>
+                        )}
+                      </p>
+                    </div>
+                  )}
+                  {alpacaStatus.actions && (
+                    <div className="mt-2">
+                      <p className="text-green-400 font-semibold">
+                        {dryRun ? '🧪 Dry Run Results:' : '✅ Strategy Executed:'}
+                      </p>
+                      <div className="mt-1 space-y-1">
+                        {alpacaStatus.zone && (
+                          <p className="text-slate-300">
+                            Zone: {alpacaStatus.zone} ({alpacaStatus.recommendation})
+                          </p>
+                        )}
+                        {alpacaStatus.calculation && (
+                          <p className="text-slate-400 text-xs">
+                            Fresh: ${alpacaStatus.calculation.freshInput.toFixed(2)} | 
+                            Drain: ${alpacaStatus.calculation.drainAmount.toFixed(2)} | 
+                            Total: ${alpacaStatus.calculation.totalBuyUSD.toFixed(2)}
+                          </p>
+                        )}
+                        {alpacaStatus.actions.map((action, idx) => (
+                          <p key={idx} className="text-slate-300">
+                            {action.type === 'buy' 
+                              ? `Buy: $${action.amount.toFixed(2)}` 
+                              : `Sell: ${action.qty.toFixed(6)} BTC`}
+                            {' - '}
+                            {action.result.success 
+                              ? (action.result.dryRun ? action.result.message : `Order ID: ${action.result.order?.id}`)
+                              : `Error: ${action.result.error}`}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-red-400">❌ {alpacaStatus.error}</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Export Data Section */}
+      <div className="card p-4 mt-6 bg-slate-900/50 border-slate-700">
+        <h3 className="text-slate-300 font-bold text-sm uppercase mb-4">Export Data</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Market Data Export */}
+          <div className="space-y-2">
+            <p className="text-slate-400 text-xs font-semibold">Market Data</p>
+            <div className="flex gap-2">
+              <button
+                onClick={async () => await exportMarketDataCSV(startDate, endDate)}
+                className="btn btn-inactive text-xs px-3 py-2 flex-1"
+                title="Export market data as CSV"
+              >
+                📊 CSV
+              </button>
+              <button
+                onClick={async () => await exportMarketDataJSON(startDate, endDate)}
+                className="btn btn-inactive text-xs px-3 py-2 flex-1"
+                title="Export market data as JSON"
+              >
+                📄 JSON
+              </button>
+            </div>
+          </div>
+
+          {/* Daily Analysis Export */}
+          <div className="space-y-2">
+            <p className="text-slate-400 text-xs font-semibold">Daily Analysis</p>
+            <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  setExportProgress({ message: 'Starting export...', progress: 0 });
+                  try {
+                    await exportDailyAnalysisCSV(
+                      startDate, 
+                      endDate, 
+                      t1, 
+                      t3,
+                      (progress) => setExportProgress(progress)
+                    );
+                  } catch (err) {
+                    console.error('Export error:', err);
+                    alert('Error exporting daily analysis. Please try again.');
+                  } finally {
+                    // Small delay to show 100% before hiding
+                    setTimeout(() => setExportProgress(null), 500);
+                  }
+                }}
+                className="btn btn-inactive text-xs px-3 py-2 flex-1"
+                disabled={!!exportProgress}
+                title="Export daily analysis as CSV"
+              >
+                {exportProgress ? '⏳ Exporting...' : '📊 CSV'}
+              </button>
+              <button
+                onClick={async () => {
+                  setExportProgress({ message: 'Starting export...', progress: 0 });
+                  try {
+                    await exportDailyAnalysisJSON(
+                      startDate, 
+                      endDate, 
+                      t1, 
+                      t3,
+                      (progress) => setExportProgress(progress)
+                    );
+                  } catch (err) {
+                    console.error('Export error:', err);
+                    alert('Error exporting daily analysis. Please try again.');
+                  } finally {
+                    // Small delay to show 100% before hiding
+                    setTimeout(() => setExportProgress(null), 500);
+                  }
+                }}
+                className="btn btn-inactive text-xs px-3 py-2 flex-1"
+                disabled={!!exportProgress}
+                title="Export daily analysis as JSON"
+              >
+                {exportProgress ? '⏳ Exporting...' : '📄 JSON'}
+              </button>
+            </div>
+          </div>
+        </div>
+        <p className="text-slate-500 text-xs mt-3">
+          Exports data for the selected date range: {startDate} to {endDate}
+        </p>
+      </div>
+
+      {/* Export Progress Modal */}
+      {exportProgress && (
+        <ExportProgress 
+          message={exportProgress.message} 
+          progress={exportProgress.progress} 
+        />
       )}
     </div>
   );
