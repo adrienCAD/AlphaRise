@@ -58,11 +58,31 @@ def calculate_ema(prices, period):
 def fetch_cbbi_data():
     """Fetch CBBI data from API"""
     try:
-        # Use CORS proxy if needed (Lambda doesn't have CORS issues)
+        # Add headers to avoid 406 Not Acceptable error
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://colintalkscrypto.com/',
+            'Origin': 'https://colintalkscrypto.com'
+        }
         url = CBBI_API_URL
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        
+        # Try direct request first
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except requests.exceptions.HTTPError as e:
+            # If 406 error, try using CORS proxy as fallback (like frontend does)
+            if e.response.status_code == 406:
+                import urllib.parse
+                proxy_url = f'https://corsproxy.io/?{urllib.parse.quote(url)}'
+                response = requests.get(proxy_url, headers=headers, timeout=15)
+                response.raise_for_status()
+                data = response.json()
+            else:
+                raise
         
         prices = data.get('Price') or data.get('BTC') or {}
         confidence = data.get('Confidence') or data.get('CBBI') or {}
@@ -122,6 +142,9 @@ def get_effective_est_date():
 
 def calculate_daily_analysis(market_data, target_date, t1, t3):
     """Calculate daily analysis for a specific date"""
+    if not market_data:
+        return None
+    
     # Find the data point for target_date
     target_data = None
     for data in market_data:
@@ -129,8 +152,15 @@ def calculate_daily_analysis(market_data, target_date, t1, t3):
             target_data = data
             break
     
+    # If target date not found, use the latest available date (fallback)
     if not target_data:
-        return None
+        # Sort by date and get the most recent
+        sorted_data = sorted(market_data, key=lambda x: x['date'], reverse=True)
+        if sorted_data:
+            target_data = sorted_data[0]
+            print(f"⚠️  Target date {target_date} not found, using latest available date: {target_data['date']}")
+        else:
+            return None
     
     price = target_data['price']
     cbbi = target_data['cbbi']
@@ -219,25 +249,25 @@ def calculate_zone3_buy_amount(base_dca, f3):
 
 def execute_alpaca_order(analysis, secrets, base_dca, f1, f3, sell_factor, dry_run=False):
     """Execute Alpaca order based on analysis"""
-        # Initialize Alpaca client
-        trading_client = TradingClient(
-            api_key=secrets['api_key'],
-            secret_key=secrets['secret_key'],
-            paper=True if 'paper' in ALPACA_BASE_URL.lower() else False
-        )
-        
-        zone = analysis['zone']
-        recommendation = analysis['recommendation']
-        
-        # Get account info
-        account = trading_client.get_account()
-        cash_reserve = float(account.cash)
-        
-        # Get BTC position
-        positions = trading_client.get_all_positions()
-        btc_position = None
-        for pos in positions:
-            if TRADING_SYMBOL in pos.symbol:
+    # Initialize Alpaca client
+    trading_client = TradingClient(
+        api_key=secrets['api_key'],
+        secret_key=secrets['secret_key'],
+        paper=True if 'paper' in ALPACA_BASE_URL.lower() else False
+    )
+    
+    zone = analysis['zone']
+    recommendation = analysis['recommendation']
+    
+    # Get account info
+    account = trading_client.get_account()
+    cash_reserve = float(account.cash)
+    
+    # Get BTC position
+    positions = trading_client.get_all_positions()
+    btc_position = None
+    for pos in positions:
+        if TRADING_SYMBOL in pos.symbol:
             btc_position = pos
             break
     
@@ -457,15 +487,17 @@ def lambda_handler(event, context):
             }
         
         # Calculate daily analysis
-        print(f"Calculating daily analysis...")
+        print(f"Calculating daily analysis for {effective_date}...")
+        print(f"Available dates in data: {[d['date'] for d in market_data[-5:]]}")  # Show last 5 dates
         analysis = calculate_daily_analysis(market_data, effective_date, t1, t3)
         
         if not analysis:
+            available_dates = [d['date'] for d in market_data[-10:]]  # Show last 10 dates
             return {
                 'statusCode': 500,
                 'body': json.dumps({
                     'success': False,
-                    'error': f'No analysis data for {effective_date}'
+                    'error': f'No analysis data for {effective_date}. Available dates: {available_dates}'
                 })
             }
         
