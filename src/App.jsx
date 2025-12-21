@@ -390,6 +390,25 @@ function App() {
                   {alpacaStatus.account && (
                     <div>
                       <p className="text-green-400 font-semibold">✅ Connection Successful</p>
+                      {alpacaStatus.account.accountNumber && (
+                        <p className={`text-xs mt-1 ${
+                          alpacaStatus.account.accountMatches === false 
+                            ? 'text-yellow-400 font-semibold' 
+                            : 'text-slate-400'
+                        }`}>
+                          Account ID: {alpacaStatus.account.accountNumber}
+                          {alpacaStatus.account.accountMatches === false && alpacaStatus.account.expectedAccountId && (
+                            <span className="block mt-1">
+                              ⚠️ Expected: {alpacaStatus.account.expectedAccountId}
+                            </span>
+                          )}
+                        </p>
+                      )}
+                      {alpacaStatus.account.accountMatches === false && (
+                        <p className="text-yellow-400 text-xs mt-1">
+                          ⚠️ Warning: Connected account doesn't match expected account ID. Check your API keys.
+                        </p>
+                      )}
                       <p className="text-slate-300 mt-1">
                         Cash: ${alpacaStatus.account.cash.toFixed(2)} | 
                         Buying Power: ${alpacaStatus.account.buyingPower.toFixed(2)}

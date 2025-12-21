@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => {
   const mergedEnv = { ...parentEnv, ...currentEnv }
   
   // Make merged env vars available to Vite's process.env
+  // Vite automatically exposes VITE_ prefixed vars to import.meta.env in the browser
   Object.keys(mergedEnv).forEach(key => {
     if (key.startsWith('VITE_')) {
       process.env[key] = mergedEnv[key]
@@ -26,6 +27,8 @@ export default defineConfig(({ mode }) => {
   
   return {
     plugins: [react()],
+    // Set envDir to parent directory - Vite will check both parent and current directory
+    envDir: resolve(__dirname, '..'),
   }
 })
 

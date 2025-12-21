@@ -4,6 +4,13 @@
 const ALPACA_BASE_URL = 'https://paper-api.alpaca.markets'; // Paper trading URL
 const API_KEY = import.meta.env.VITE_ALPACA_API_KEY || '';
 const SECRET_KEY = import.meta.env.VITE_ALPACA_SECRET_KEY || '';
+const EXPECTED_ACCOUNT_ID = import.meta.env.VITE_ALPACA_ACCOUNT_ID || ''; // Optional: verify account ID
+
+// Debug: Log env var status (remove in production)
+if (import.meta.env.DEV) {
+  console.log('Alpaca API Key loaded:', API_KEY ? `${API_KEY.substring(0, 8)}...` : 'NOT FOUND');
+  console.log('Alpaca Secret loaded:', SECRET_KEY ? `${SECRET_KEY.substring(0, 8)}...` : 'NOT FOUND');
+}
 
 // Helper to create authenticated headers
 function getHeaders() {
@@ -40,16 +47,23 @@ export async function testAlpacaConnection() {
     }
 
     const account = await response.json();
+    const accountNumber = account.account_number || account.id;
+    const accountMatches = EXPECTED_ACCOUNT_ID ? accountNumber === EXPECTED_ACCOUNT_ID : true;
+    
     return {
       success: true,
       account: {
+        accountNumber: accountNumber, // This is the account ID
+        id: account.id, // Alternative account identifier
         cash: parseFloat(account.cash),
         buyingPower: parseFloat(account.buying_power),
         portfolioValue: parseFloat(account.portfolio_value),
         equity: parseFloat(account.equity),
         status: account.status,
         tradingBlocked: account.trading_blocked,
-        accountBlocked: account.account_blocked
+        accountBlocked: account.account_blocked,
+        accountMatches: accountMatches, // Whether account matches expected
+        expectedAccountId: EXPECTED_ACCOUNT_ID || null
       }
     };
   } catch (error) {
