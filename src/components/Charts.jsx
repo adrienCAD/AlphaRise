@@ -1,11 +1,69 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 const Charts = ({ simResults, startDate, endDate }) => {
+  const chartsRef = useRef({
+    main: null,
+    cash: null,
+    price: null
+  });
+
   useEffect(() => {
     if (!simResults || typeof window.Plotly === 'undefined') return;
 
     const Plotly = window.Plotly;
     const { dates, prices, strategies, zones, cbbis } = simResults;
+
+    // Helper function to update vertical line on a chart
+    const updateVerticalLine = (chartId, xValue) => {
+      if (!xValue) {
+        // Remove the line if no xValue
+        Plotly.relayout(chartId, {
+          shapes: []
+        });
+        return;
+      }
+
+      Plotly.relayout(chartId, {
+        shapes: [{
+          type: 'line',
+          xref: 'x',
+          yref: 'paper',
+          x0: xValue,
+          x1: xValue,
+          y0: 0,
+          y1: 1,
+          line: {
+            color: '#3b82f6',
+            width: 2,
+            dash: 'dot'
+          },
+          layer: 'above'
+        }]
+      });
+    };
+
+    // Event handler for hover synchronization
+    const handleHover = (chartId, eventData) => {
+      if (!eventData || !eventData.points || eventData.points.length === 0) return;
+      
+      const xValue = eventData.points[0].x;
+      
+      // Update vertical lines on the other two charts
+      Object.keys(chartsRef.current).forEach(id => {
+        if (id !== chartId && chartsRef.current[id]) {
+          updateVerticalLine(chartsRef.current[id], xValue);
+        }
+      });
+    };
+
+    // Event handler to remove lines when mouse leaves
+    const handleUnhover = () => {
+      Object.keys(chartsRef.current).forEach(id => {
+        if (chartsRef.current[id]) {
+          updateVerticalLine(chartsRef.current[id], null);
+        }
+      });
+    };
 
     // 1. Portfolio Chart
     const valTraces = strategies.map(s => ({
@@ -30,7 +88,13 @@ const Charts = ({ simResults, startDate, endDate }) => {
       legend: { orientation: 'h', y: -0.2 }
     };
 
-    Plotly.newPlot('chart-main', valTraces, { ...layout, title: 'Total Portfolio Value (USD)' }, { displayModeBar: false });
+    Plotly.newPlot('chart-main', valTraces, { ...layout, title: 'Total Portfolio Value (USD)' }, { displayModeBar: false })
+      .then(() => {
+        chartsRef.current.main = 'chart-main';
+        const mainChart = document.getElementById('chart-main');
+        mainChart.on('plotly_hover', (data) => handleHover('main', data));
+        mainChart.on('plotly_unhover', handleUnhover);
+      });
 
     // 2. Cash Reserve
     const vdca = strategies.find(s => s.name.includes("V_DCA"));
@@ -50,7 +114,13 @@ const Charts = ({ simResults, startDate, endDate }) => {
       title: 'Dry Powder (Cash Reserve)',
       height: 200,
       yaxis: { ...layout.yaxis, title: 'USD' }
-    }, { displayModeBar: false });
+    }, { displayModeBar: false })
+      .then(() => {
+        chartsRef.current.cash = 'chart-cash';
+        const cashChart = document.getElementById('chart-cash');
+        cashChart.on('plotly_hover', (data) => handleHover('cash', data));
+        cashChart.on('plotly_unhover', handleUnhover);
+      });
 
     // 3. Price + CBBI Overlay
     const zoneShapes = [];
@@ -111,7 +181,26 @@ const Charts = ({ simResults, startDate, endDate }) => {
       }
     };
 
-    Plotly.newPlot('chart-price', [priceTrace, cbbiTrace], dualLayout, { displayModeBar: false });
+    Plotly.newPlot('chart-price', [priceTrace, cbbiTrace], dualLayout, { displayModeBar: false })
+      .then(() => {
+        chartsRef.current.price = 'chart-price';
+        const priceChart = document.getElementById('chart-price');
+        priceChart.on('plotly_hover', (data) => handleHover('price', data));
+        priceChart.on('plotly_unhover', handleUnhover);
+      });
+
+    // Cleanup function
+    return () => {
+      Object.keys(chartsRef.current).forEach(id => {
+        if (chartsRef.current[id]) {
+          const chartElement = document.getElementById(chartsRef.current[id]);
+          if (chartElement) {
+            chartElement.removeAllListeners('plotly_hover');
+            chartElement.removeAllListeners('plotly_unhover');
+          }
+        }
+      });
+    };
 
   }, [simResults, startDate, endDate]);
 
