@@ -105,6 +105,21 @@ The app will open at `http://localhost:5173/` when running the dev server.
 
 Use the date range selectors to test different time periods, and adjust the V_DCA parameters using the sliders to see how different configurations perform.
 
+## AWS Lambda Automation
+
+AlphaRise includes an AWS Lambda function for automated daily trading execution.
+
+The `lambda/` directory contains:
+- **lambda_function.py**: Main Lambda handler
+- **requirements.txt**: Python dependencies
+- **README.md**: Complete deployment instructions
+- **deploy.sh**: Deployment script
+- **test_local.py**: Local testing script
+
+See [lambda/README.md](lambda/README.md) for detailed AWS setup and deployment instructions.
+
+**Cost**: ~$0.80/month (mostly Secrets Manager)
+
 ## License
 
 Proprietary - All Rights Reserved

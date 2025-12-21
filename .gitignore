@@ -8,3 +8,13 @@ dist/
 *.db-shm
 *.db-wal
 
+# Lambda deployment
+lambda/lambda_function.zip
+lambda/__pycache__/
+lambda/*.pyc
+lambda/*.egg-info/
+lambda/dist/
+lambda/build/
+lambda/venv/
+lambda/env/
+
