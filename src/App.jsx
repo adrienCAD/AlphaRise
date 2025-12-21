@@ -30,11 +30,11 @@ function App() {
   const [baseDCA, setBaseDCA] = useState(20);
 
   // V_DCA Config
-  const [t1, setT1] = useState(60);   // Accumulation < 60
-  const [t3, setT3] = useState(74);   // Reduction > 74
+  const [t1, setT1] = useState(67);   // Accumulation < 67
+  const [t3, setT3] = useState(77);   // Reduction > 77
   const [f1, setF1] = useState(10.0); // Factor 10x
   const [f3, setF3] = useState(0.0);  // Factor 0x
-  const [sellFactor, setSellFactor] = useState(2.0); // Sell 2%
+  const [sellFactor, setSellFactor] = useState(5.0); // Sell 5%
 
   const [recData, setRecData] = useState(null);
   const [zoneStats, setZoneStats] = useState({ z1: 0, z2: 0, z3: 0 });
@@ -121,6 +121,7 @@ function App() {
 
     setAlpacaExecuting(true);
     setAlpacaStatus(null);
+    setExportProgress({ message: 'Preparing strategy execution...', progress: 0 });
     
     try {
       const result = await executeStrategy(
@@ -129,7 +130,10 @@ function App() {
         f3,
         sellFactor,
         'BTCUSD', // Adjust symbol if needed for your Alpaca account
-        dryRun
+        dryRun,
+        t1, // Pass t1
+        t3, // Pass t3
+        (progress) => setExportProgress(progress) // Progress callback
       );
       setAlpacaStatus(result);
     } catch (error) {
@@ -139,6 +143,7 @@ function App() {
       });
     } finally {
       setAlpacaExecuting(false);
+      setTimeout(() => setExportProgress(null), 500);
     }
   };
 
@@ -306,7 +311,7 @@ function App() {
             <input
               type="range"
               min="0"
-              max="5"
+              max="10"
               step="0.1"
               value={sellFactor}
               onChange={e => setSellFactor(Number(e.target.value))}
@@ -429,23 +434,69 @@ function App() {
                             Zone: {alpacaStatus.zone} ({alpacaStatus.recommendation})
                           </p>
                         )}
-                        {alpacaStatus.calculation && (
-                          <p className="text-slate-400 text-xs">
-                            Fresh: ${alpacaStatus.calculation.freshInput.toFixed(2)} | 
-                            Drain: ${alpacaStatus.calculation.drainAmount.toFixed(2)} | 
-                            Total: ${alpacaStatus.calculation.totalBuyUSD.toFixed(2)}
-                          </p>
+                        {/* Daily Contribution & Interest */}
+                        {(alpacaStatus.dailyContribution !== undefined || alpacaStatus.interestEarned !== undefined) && (
+                          <div className="text-slate-400 text-xs space-y-0.5">
+                            {alpacaStatus.dailyContribution > 0 && (
+                              <p>
+                                💰 Daily Contribution: ${alpacaStatus.dailyContribution.toFixed(2)}
+                              </p>
+                            )}
+                            {alpacaStatus.interestEarned !== undefined && alpacaStatus.interestEarned > 0 && (
+                              <p>
+                                📈 Interest Earned: +${alpacaStatus.interestEarned.toFixed(2)} (4.5% APY)
+                              </p>
+                            )}
+                          </div>
                         )}
+                        {/* Calculation Breakdown */}
+                        {alpacaStatus.calculation && (
+                          <div className="text-slate-400 text-xs space-y-0.5">
+                            {alpacaStatus.calculation.dailyContribution !== undefined && (
+                              <p>
+                                Pocket: ${alpacaStatus.calculation.dailyContribution.toFixed(2)} | 
+                                Reserve: ${alpacaStatus.calculation.reserveDrain?.toFixed(2) || alpacaStatus.calculation.drainAmount.toFixed(2)} | 
+                                Total: ${alpacaStatus.calculation.totalBuyUSD.toFixed(2)}
+                              </p>
+                            )}
+                            {!alpacaStatus.calculation.dailyContribution && (
+                              <p>
+                                Fresh: ${alpacaStatus.calculation.freshInput.toFixed(2)} | 
+                                Drain: ${alpacaStatus.calculation.drainAmount.toFixed(2)} | 
+                                Total: ${alpacaStatus.calculation.totalBuyUSD.toFixed(2)}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {/* Actions */}
                         {alpacaStatus.actions.map((action, idx) => (
-                          <p key={idx} className="text-slate-300">
-                            {action.type === 'buy' 
-                              ? `Buy: $${action.amount.toFixed(2)}` 
-                              : `Sell: ${action.qty.toFixed(6)} BTC`}
-                            {' - '}
-                            {action.result.success 
-                              ? (action.result.dryRun ? action.result.message : `Order ID: ${action.result.order?.id}`)
-                              : `Error: ${action.result.error}`}
-                          </p>
+                          <div key={idx} className="text-slate-300">
+                            {action.type === 'buy' ? (
+                              <div>
+                                <p>
+                                  Buy: ${action.amount.toFixed(2)}
+                                  {action.breakdown && (
+                                    <span className="text-slate-400 text-xs block ml-2">
+                                      (${action.breakdown.fromDailyContribution?.toFixed(2) || '0.00'} from contribution + ${action.breakdown.fromReserve?.toFixed(2) || '0.00'} from reserve)
+                                    </span>
+                                  )}
+                                </p>
+                                <p className="text-xs text-slate-400 ml-2">
+                                  {action.result.success 
+                                    ? (action.result.dryRun ? action.result.message : `Order ID: ${action.result.order?.id}`)
+                                    : `Error: ${action.result.error}`}
+                                </p>
+                              </div>
+                            ) : (
+                              <p>
+                                Sell: {action.qty.toFixed(6)} BTC
+                                {' - '}
+                                {action.result.success 
+                                  ? (action.result.dryRun ? action.result.message : `Order ID: ${action.result.order?.id}`)
+                                  : `Error: ${action.result.error}`}
+                              </p>
+                            )}
+                          </div>
                         ))}
                       </div>
                     </div>

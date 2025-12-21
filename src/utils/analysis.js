@@ -112,3 +112,54 @@ export function getRecommendationText(zone, cbbi) {
   }
 }
 
+/**
+ * Ensure daily analysis exists for a date range, calculate if needed
+ * This is the DRY version used by both export and execute functions
+ */
+export async function ensureDailyAnalysisExists(
+  startDate,
+  endDate,
+  t1 = 67,
+  t3 = 77,
+  onProgress = null
+) {
+  const { initDatabase, getDailyAnalysis, getMarketData } = await import('./database');
+  await initDatabase();
+
+  // Check if analysis exists
+  let analysis = getDailyAnalysis(startDate, endDate);
+
+  // If no data, calculate it now
+  if (analysis.length === 0) {
+    if (onProgress) onProgress({ message: 'Calculating daily analysis...', progress: 0 });
+
+    const marketData = getMarketData(startDate, endDate);
+
+    if (marketData.length === 0) {
+      return {
+        success: false,
+        error: 'No market data available for the selected date range.',
+        analysis: []
+      };
+    }
+
+    if (onProgress) {
+      onProgress({ message: `Processing ${marketData.length} records...`, progress: 30 });
+    }
+
+    await calculateAndStoreDailyAnalysis(marketData, t1, t3);
+
+    if (onProgress) {
+      onProgress({ message: 'Analysis complete...', progress: 80 });
+    }
+
+    // Get the newly calculated data
+    analysis = getDailyAnalysis(startDate, endDate);
+  }
+
+  return {
+    success: true,
+    analysis
+  };
+}
+

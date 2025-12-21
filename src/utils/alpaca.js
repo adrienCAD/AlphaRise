@@ -238,7 +238,8 @@ export async function placeSellOrder(symbol, qty, dryRun = true) {
 }
 
 /**
- * Execute AlphaRise strategy for today
+ * Execute AlphaRise strategy for today with simulated daily DCA contribution
+ * Uses shared helper functions for DRY code
  */
 export async function executeStrategy(
   baseDCA,
@@ -246,19 +247,45 @@ export async function executeStrategy(
   f3,
   sellFactor,
   symbol = 'BTCUSD',
-  dryRun = true
+  dryRun = true,
+  t1 = 67,
+  t3 = 77,
+  onProgress = null
 ) {
-  // Get today's recommendation from database
-  const { initDatabase, getDailyAnalysis } = await import('./database');
-  await initDatabase();
+  // Import helper functions
+  const { 
+    getEffectiveESTDate,
+    calculateDailyContribution,
+    calculateZone1BuyAmount,
+    calculateZone2BuyAmount,
+    calculateZone3BuyAmount
+  } = await import('./strategyHelpers');
+  
+  // Use EST date based on CBBI posting schedule
+  const effectiveDate = getEffectiveESTDate();
+  
+  // Ensure daily analysis exists (auto-calculate if needed)
+  const { ensureDailyAnalysisExists } = await import('./analysis');
+  const analysisResult = await ensureDailyAnalysisExists(
+    effectiveDate,
+    effectiveDate,
+    t1,
+    t3,
+    onProgress
+  );
 
-  const today = new Date().toISOString().split('T')[0];
-  const analysis = getDailyAnalysis(today, today);
+  if (!analysisResult.success) {
+    return {
+      success: false,
+      error: analysisResult.error || `No daily analysis found for ${effectiveDate}`
+    };
+  }
 
+  const analysis = analysisResult.analysis;
   if (analysis.length === 0) {
     return {
       success: false,
-      error: `No daily analysis found for today (${today}). Please export daily analysis first to generate today's recommendation.`
+      error: `No daily analysis found for ${effectiveDate} after calculation attempt.`
     };
   }
 
@@ -272,81 +299,92 @@ export async function executeStrategy(
     return accountResult;
   }
 
-  const cashReserve = accountResult.account.cash;
+  const actualCashReserve = accountResult.account.cash;
   const btcResult = await getBTCPosition();
   const totalBTC = btcResult.qty || 0;
 
-  const results = {
-    date: today,
+  // Calculate daily contribution using helper
+  const dailyContribution = calculateDailyContribution(
     zone,
     recommendation,
-    cashBefore: cashReserve,
+    baseDCA,
+    f1,
+    f3
+  );
+
+  // Note: Interest is NOT calculated here - it's a cumulative metric over time
+  // For single execution, we don't show interest (it would be $0 for one day)
+
+  const results = {
+    date: effectiveDate,
+    zone,
+    recommendation,
+    actualCashBefore: actualCashReserve,
+    dailyContribution: dailyContribution,
+    interestEarned: 0, // Interest accrues over time, not in single execution
+    simulatedCashAfterContribution: actualCashReserve + dailyContribution, // For display only
     btcBefore: totalBTC,
     actions: []
   };
 
-  // Execute based on zone
+  // Execute based on zone using helper functions
   if (zone === 1 || recommendation === 'accumulate') {
-    // ZONE 1: ACCUMULATE
-    const freshInput = baseDCA * f1;
-    const drainAmount = (baseDCA * f3) + (cashReserve / 15.0);
-    const totalBuyUSD = freshInput + drainAmount;
-
+    // Pass actualCashReserve (reserve only), not totalAvailableCash
+    // Drain is calculated from reserve only, then daily contribution is added separately
+    const calc = calculateZone1BuyAmount(baseDCA, f1, f3, actualCashReserve);
     results.calculation = {
-      freshInput,
-      drainAmount,
-      totalBuyUSD
+      freshInput: calc.freshInput,
+      drainAmount: calc.drainAmount,
+      totalBuyUSD: calc.totalBuyUSD,
+      dailyContribution: calc.freshInput,
+      reserveDrain: calc.drainAmount
     };
 
-    if (cashReserve >= totalBuyUSD) {
-      const buyResult = await placeBuyOrder(symbol, totalBuyUSD, dryRun);
-      results.actions.push({
-        type: 'buy',
-        amount: totalBuyUSD,
-        result: buyResult
-      });
-    } else {
-      results.actions.push({
-        type: 'buy',
-        amount: totalBuyUSD,
-        result: {
-          success: false,
-          error: `Insufficient cash. Need $${totalBuyUSD.toFixed(2)}, have $${cashReserve.toFixed(2)}`
-        }
-      });
-    }
+    await executeBuyOrder(
+      symbol,
+      calc.totalBuyUSD,
+      calc.freshInput,
+      calc.drainAmount,
+      actualCashReserve,
+      dailyContribution,
+      dryRun,
+      results
+    );
   } else if (zone === 2 || recommendation === 'neutral') {
-    // ZONE 2: NEUTRAL
-    if (cashReserve >= baseDCA) {
-      const buyResult = await placeBuyOrder(symbol, baseDCA, dryRun);
-      results.actions.push({
-        type: 'buy',
-        amount: baseDCA,
-        result: buyResult
-      });
-    } else {
-      results.actions.push({
-        type: 'buy',
-        amount: baseDCA,
-        result: {
-          success: false,
-          error: `Insufficient cash. Need $${baseDCA.toFixed(2)}, have $${cashReserve.toFixed(2)}`
-        }
-      });
-    }
+    const calc = calculateZone2BuyAmount(baseDCA);
+    results.calculation = {
+      freshInput: calc.freshInput,
+      drainAmount: 0,
+      totalBuyUSD: calc.totalBuyUSD
+    };
+
+    await executeBuyOrder(
+      symbol,
+      calc.totalBuyUSD,
+      calc.freshInput,
+      0,
+      actualCashReserve,
+      dailyContribution,
+      dryRun,
+      results
+    );
   } else if (zone === 3 || recommendation === 'reduce') {
-    // ZONE 3: REDUCE
-    const buyAmount = baseDCA * f3;
+    const calc = calculateZone3BuyAmount(baseDCA, f3);
     
-    if (buyAmount > 0 && cashReserve >= buyAmount) {
-      const buyResult = await placeBuyOrder(symbol, buyAmount, dryRun);
-      results.actions.push({
-        type: 'buy',
-        amount: buyAmount,
-        result: buyResult
-      });
+    if (calc.totalBuyUSD > 0) {
+      await executeBuyOrder(
+        symbol,
+        calc.totalBuyUSD,
+        calc.freshInput,
+        0,
+        actualCashReserve,
+        dailyContribution,
+        dryRun,
+        results
+      );
     }
 
+    // Execute sell order
     if (totalBTC > 0) {
       const sellQty = totalBTC * (sellFactor / 100.0);
       const sellResult = await placeSellOrder(symbol, sellQty, dryRun);
@@ -363,5 +401,64 @@ export async function executeStrategy(
     dryRun,
     ...results
   };
+}
+
+/**
+ * Helper function to execute buy orders (DRY)
+ */
+async function executeBuyOrder(
+  symbol,
+  totalBuyUSD,
+  fromContribution,
+  fromReserve,
+  actualCashReserve,
+  dailyContribution,
+  dryRun,
+  results
+) {
+  if (dryRun) {
+    results.actions.push({
+      type: 'buy',
+      amount: totalBuyUSD,
+      breakdown: {
+        fromDailyContribution: fromContribution,
+        fromReserve: fromReserve
+      },
+      result: {
+        success: true,
+        dryRun: true,
+        message: `DRY RUN: Would buy $${totalBuyUSD.toFixed(2)} of ${symbol} ($${fromContribution.toFixed(2)} from daily contribution + $${fromReserve.toFixed(2)} from reserve)`
+      }
+    });
+  } else {
+    // For live trading: need enough actual cash to cover both reserve drain AND daily contribution
+    // (since daily contribution is simulated and not actually in account yet)
+    if (actualCashReserve >= totalBuyUSD) {
+      const buyResult = await placeBuyOrder(symbol, totalBuyUSD, false);
+      results.actions.push({
+        type: 'buy',
+        amount: totalBuyUSD,
+        breakdown: {
+          fromDailyContribution: fromContribution,
+          fromReserve: fromReserve
+        },
+        result: buyResult
+      });
+    } else {
+      const shortfall = totalBuyUSD - actualCashReserve;
+      results.actions.push({
+        type: 'buy',
+        amount: totalBuyUSD,
+        breakdown: {
+          fromDailyContribution: fromContribution,
+          fromReserve: fromReserve
+        },
+        result: {
+          success: false,
+          error: `Insufficient cash. Need $${totalBuyUSD.toFixed(2)}, have $${actualCashReserve.toFixed(2)}. Please deposit $${shortfall.toFixed(2)} (includes daily contribution: $${dailyContribution.toFixed(2)})`
+        }
+      });
+    }
+  }
 }
 

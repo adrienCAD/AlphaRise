@@ -424,53 +424,32 @@ export async function exportMarketDataJSON(startDate = '2000-01-01', endDate = '
 }
 
 // Export daily analysis as CSV (flattened)
-export async function exportDailyAnalysisCSV(startDate = '2000-01-01', endDate = '2099-12-31', t1 = 60, t3 = 74, onProgress = null) {
+export async function exportDailyAnalysisCSV(startDate = '2000-01-01', endDate = '2099-12-31', t1 = 67, t3 = 77, onProgress = null) {
   // Ensure database is initialized
   if (!db) {
     await initDatabase();
   }
   
-  // Check if analysis exists for this date range
-  let data = getDailyAnalysis(startDate, endDate);
-  
-  // If no data, calculate it now with current t1/t3 values
-  if (data.length === 0) {
-    if (onProgress) onProgress({ message: 'Calculating daily analysis...', progress: 0 });
-    
-    // Get market data for the date range
-    const marketData = getMarketData(startDate, endDate);
-    
-    if (marketData.length === 0) {
-      alert('No market data available for the selected date range.');
-      return;
-    }
-    
-    // Calculate analysis with progress updates
-    const { calculateAndStoreDailyAnalysis } = await import('./analysis');
-    
-    if (onProgress) {
-      onProgress({ message: `Processing ${marketData.length} records...`, progress: 30 });
-    }
-    
-    await calculateAndStoreDailyAnalysis(marketData, t1, t3);
-    
-    if (onProgress) {
-      onProgress({ message: 'Finalizing export...', progress: 80 });
-    }
-    
-    // Get the newly calculated data
-    data = getDailyAnalysis(startDate, endDate);
+  // Use shared helper to ensure analysis exists
+  const { ensureDailyAnalysisExists } = await import('./analysis');
+  const result = await ensureDailyAnalysisExists(startDate, endDate, t1, t3, onProgress);
+
+  if (!result.success) {
+    alert(result.error);
+    return;
   }
-  
+
+  const data = result.analysis;
+
   if (data.length === 0) {
     alert('No daily analysis data available for the selected date range.');
     return;
   }
-  
+
   if (onProgress) {
     onProgress({ message: 'Preparing CSV file...', progress: 90 });
   }
-  
+
   // Flatten the nested structure for CSV
   const flattened = data.map(item => ({
     date: item.date,
@@ -487,72 +466,51 @@ export async function exportDailyAnalysisCSV(startDate = '2000-01-01', endDate =
     ema50: item.marketData?.ema50,
     ema100: item.marketData?.ema100
   }));
-  
+
   const csv = arrayToCSV(flattened);
   const filename = `daily_analysis_${startDate}_to_${endDate}.csv`;
-  
+
   if (onProgress) {
     onProgress({ message: 'Exporting...', progress: 100 });
   }
-  
+
   downloadFile(csv, filename, 'text/csv');
 }
 
 // Export daily analysis as JSON
-export async function exportDailyAnalysisJSON(startDate = '2000-01-01', endDate = '2099-12-31', t1 = 60, t3 = 74, onProgress = null) {
+export async function exportDailyAnalysisJSON(startDate = '2000-01-01', endDate = '2099-12-31', t1 = 67, t3 = 77, onProgress = null) {
   // Ensure database is initialized
   if (!db) {
     await initDatabase();
   }
   
-  // Check if analysis exists for this date range
-  let data = getDailyAnalysis(startDate, endDate);
-  
-  // If no data, calculate it now with current t1/t3 values
-  if (data.length === 0) {
-    if (onProgress) onProgress({ message: 'Calculating daily analysis...', progress: 0 });
-    
-    // Get market data for the date range
-    const marketData = getMarketData(startDate, endDate);
-    
-    if (marketData.length === 0) {
-      alert('No market data available for the selected date range.');
-      return;
-    }
-    
-    // Calculate analysis with progress updates
-    const { calculateAndStoreDailyAnalysis } = await import('./analysis');
-    
-    if (onProgress) {
-      onProgress({ message: `Processing ${marketData.length} records...`, progress: 30 });
-    }
-    
-    await calculateAndStoreDailyAnalysis(marketData, t1, t3);
-    
-    if (onProgress) {
-      onProgress({ message: 'Finalizing export...', progress: 80 });
-    }
-    
-    // Get the newly calculated data
-    data = getDailyAnalysis(startDate, endDate);
+  // Use shared helper to ensure analysis exists
+  const { ensureDailyAnalysisExists } = await import('./analysis');
+  const result = await ensureDailyAnalysisExists(startDate, endDate, t1, t3, onProgress);
+
+  if (!result.success) {
+    alert(result.error);
+    return;
   }
-  
+
+  const data = result.analysis;
+
   if (data.length === 0) {
     alert('No daily analysis data available for the selected date range.');
     return;
   }
-  
+
   if (onProgress) {
     onProgress({ message: 'Preparing JSON file...', progress: 90 });
   }
-  
+
   const json = JSON.stringify(data, null, 2);
   const filename = `daily_analysis_${startDate}_to_${endDate}.json`;
-  
+
   if (onProgress) {
     onProgress({ message: 'Exporting...', progress: 100 });
   }
-  
+
   downloadFile(json, filename, 'application/json');
 }
 
