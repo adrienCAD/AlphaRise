@@ -1,56 +1,35 @@
 #!/bin/bash
-# Deployment script for AWS Lambda function
-# Creates a deployment package ready for upload to AWS Lambda
 
-set -e
+# 1. Define variables
+PACKAGE_NAME="lambda_function.zip"
+BUILD_DIR="build_package"
 
-echo "🚀 AlphaRise Lambda Deployment Script"
-echo "======================================"
+echo "🚀 Starting Clean Build..."
 
-# Check if we're in the lambda directory
-if [ ! -f "lambda_function.py" ]; then
-    echo "❌ Error: Must run from lambda/ directory"
-    exit 1
-fi
+# 2. Clean up previous builds
+rm -rf $BUILD_DIR
+rm -f $PACKAGE_NAME
 
-# Clean up any previous deployment package
-if [ -f "lambda_function.zip" ]; then
-    echo "🧹 Cleaning up previous deployment package..."
-    rm lambda_function.zip
-fi
+# 3. Create a temporary build directory
+mkdir $BUILD_DIR
 
-# Install dependencies
-echo "📦 Installing Python dependencies..."
-pip install -r requirements.txt -t . --quiet
+# 4. Install dependencies into the build directory (NOT your main folder)
+# This keeps your workspace clean!
+echo "📦 Installing dependencies to temporary folder..."
+pip install -r requirements.txt --target ./$BUILD_DIR --quiet
 
-# Create deployment package
-echo "📦 Creating deployment package..."
-zip -r lambda_function.zip . \
-    -x "*.git*" \
-    -x "*.pyc" \
-    -x "__pycache__/*" \
-    -x "*.md" \
-    -x "deploy.sh" \
-    -x "test_local.py" \
-    -x "*.zip" \
-    -x ".gitignore" \
-    -x "*.DS_Store" \
-    > /dev/null
+# 5. Copy your Python handler into the build directory
+echo "COPY Copying lambda_function.py..."
+cp lambda_function.py ./$BUILD_DIR/
 
-# Check package size
-PACKAGE_SIZE=$(du -h lambda_function.zip | cut -f1)
-echo "✅ Deployment package created: lambda_function.zip ($PACKAGE_SIZE)"
+# 6. Create the Zip file from the build directory
+echo "🤐 Zipping package..."
+cd $BUILD_DIR
+zip -r ../$PACKAGE_NAME . -x "*.dist-info/*" -x "**/__pycache__/*" > /dev/null
+cd ..
 
-# Check if package is too large (Lambda limit is 50MB unzipped, 250MB unzipped for container)
-PACKAGE_SIZE_BYTES=$(stat -f%z lambda_function.zip 2>/dev/null || stat -c%s lambda_function.zip 2>/dev/null)
-if [ "$PACKAGE_SIZE_BYTES" -gt 52428800 ]; then
-    echo "⚠️  Warning: Package size exceeds 50MB. Consider using Lambda Layers."
-fi
+# 7. Clean up: Remove the build directory
+echo "🧹 Cleaning up temporary files..."
+rm -rf $BUILD_DIR
 
-echo ""
-echo "📤 Next steps:"
-echo "1. Upload lambda_function.zip to AWS Lambda via console, or"
-echo "2. Use AWS CLI: aws lambda update-function-code --function-name alpharise-daily-trading --zip-file fileb://lambda_function.zip"
-echo ""
-echo "✨ Done!"
-
+echo "✅ DONE! Upload '$PACKAGE_NAME' to AWS Lambda."

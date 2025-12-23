@@ -1,537 +1,283 @@
-"""
-AWS Lambda function for AlphaRise daily trading automation
-Fetches CBBI data, calculates analysis, and executes Alpaca orders
-"""
 import json
 import os
 import boto3
-from datetime import datetime
 import requests
+import math
+from datetime import datetime, timezone, timedelta
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from config.config import (
-    DEFAULT_T1, DEFAULT_T3, DEFAULT_BASE_DCA, DEFAULT_F1, DEFAULT_F3, DEFAULT_SELL_FACTOR,
-    CBBI_API_URL, ALPACA_BASE_URL, S3_BUCKET_NAME,
-    TRADING_SYMBOL, CBBI_POSTING_HOUR, EST_TIMEZONE,
-    ALPACA_API_KEY, ALPACA_SECRET_KEY
-)
+
+# ================= CONFIGURATION =================
+# Recommended: Set these as Environment Variables in AWS Lambda
+ALPACA_API_KEY = os.getenv('ALPACA_API_KEY')
+ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY')
+ALPACA_ENDPOINT = os.getenv('ALPACA_ENDPOINT', 'https://paper-api.alpaca.markets')
+S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
+SYMBOL = "BTC/USD"
+CBBI_API_URL = "https://colintalkscrypto.com/cbbi/data/latest.json"
+
+# Strategy Defaults
+DEFAULT_BASE_DCA = float(os.getenv('BASE_DCA', 100))
+DEFAULT_F1 = float(os.getenv('F1', 10))
+DEFAULT_F3 = float(os.getenv('F3', 0))
+DEFAULT_SELL_FACTOR = float(os.getenv('SELL_FACTOR', 2))
+DEFAULT_T1 = 30 # Zone 1 threshold
+DEFAULT_T3 = 70 # Zone 3 threshold
 
 def get_s3_client():
-    """Get S3 client if bucket is configured"""
     return boto3.client('s3') if S3_BUCKET_NAME else None
 
+def get_utc_date_str():
+    """Returns current UTC date as YYYY-MM-DD string."""
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
-def get_secrets():
-    """Retrieve Alpaca API keys from environment variables"""
-    api_key = ALPACA_API_KEY or os.getenv('ALPACA_API_KEY', '')
-    secret_key = ALPACA_SECRET_KEY or os.getenv('ALPACA_SECRET_KEY', '')
+def check_already_traded(date_str):
+    """Checks S3 to see if we already executed a strategy for this date."""
+    if not S3_BUCKET_NAME:
+        return False
     
-    if not api_key or not secret_key:
-        raise Exception("ALPACA_API_KEY and ALPACA_SECRET_KEY must be set as environment variables")
-    
-    return {
-        'api_key': api_key,
-        'secret_key': secret_key
-    }
-
+    s3 = get_s3_client()
+    key = f"executions/{date_str}.json"
+    try:
+        s3.head_object(Bucket=S3_BUCKET_NAME, Key=key)
+        print(f"🛑 Trade already executed for {date_str}. Skipping.")
+        return True
+    except:
+        return False # File does not exist, safe to proceed
 
 def calculate_ema(prices, period):
-    """Calculate Exponential Moving Average"""
     if len(prices) < period:
         return [None] * len(prices)
     
     k = 2.0 / (period + 1)
     ema = [None] * len(prices)
-    
-    # Calculate SMA for first period values
     sma = sum(prices[:period]) / period
     ema[period - 1] = sma
     
-    # Calculate EMA for remaining values
     for i in range(period, len(prices)):
         ema[i] = (prices[i] * k) + (ema[i - 1] * (1 - k))
-    
     return ema
 
-
 def fetch_cbbi_data():
-    """Fetch CBBI data from API"""
     try:
-        # Add headers to avoid 406 Not Acceptable error
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://colintalkscrypto.com/',
-            'Origin': 'https://colintalkscrypto.com'
+            'User-Agent': 'Mozilla/5.0', 
+            'Accept': 'application/json'
         }
-        url = CBBI_API_URL
         
-        # Try direct request first
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-        except requests.exceptions.HTTPError as e:
-            # If 406 error, try using CORS proxy as fallback (like frontend does)
-            if e.response.status_code == 406:
-                import urllib.parse
-                proxy_url = f'https://corsproxy.io/?{urllib.parse.quote(url)}'
-                response = requests.get(proxy_url, headers=headers, timeout=15)
-                response.raise_for_status()
-                data = response.json()
-            else:
-                raise
-        
+        # 1. Fetch Data
+        resp = requests.get(CBBI_API_URL, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
         prices = data.get('Price') or data.get('BTC') or {}
         confidence = data.get('Confidence') or data.get('CBBI') or {}
-        
-        raw_data = []
-        for ts in sorted(prices.keys(), key=lambda x: int(x)):
-            t = int(ts)
-            if t < 10000000000:
-                t *= 1000
+
+        # 2. Process Data
+        processed = []
+        for ts_str in sorted(prices.keys(), key=lambda x: int(x)):
+            ts = int(ts_str)
+            price = prices[ts_str]
+            # Handle confidence mapping
+            c = confidence.get(ts_str, 50)
+            if c <= 1: c = round(c * 100) # Fix decimal CBBI if present
             
-            date_str = datetime.fromtimestamp(t / 1000).strftime('%Y-%m-%d')
-            c = confidence.get(ts, 50)
-            if c <= 1:
-                c = round(c * 100)
-            if not c:
-                c = 50
+            # CRITICAL: Strict UTC conversion
+            # Using timezone.utc ensures we don't get local lambda time
+            date_obj = datetime.fromtimestamp(ts if ts > 1e10 else ts, tz=timezone.utc)
+            date_str = date_obj.strftime('%Y-%m-%d')
             
-            raw_data.append({
+            processed.append({
                 'date': date_str,
-                'price': prices[ts],
+                'price': price,
                 'cbbi': c
             })
+
+        # 3. Calculate EMAs
+        price_list = [p['price'] for p in processed]
+        ema20 = calculate_ema(price_list, 20)
+        ema50 = calculate_ema(price_list, 50)
         
-        # Calculate EMAs
-        price_array = [d['price'] for d in raw_data]
-        ema20 = calculate_ema(price_array, 20)
-        ema50 = calculate_ema(price_array, 50)
-        ema100 = calculate_ema(price_array, 100)
-        
-        # Add EMAs to data
-        result = []
-        for i, d in enumerate(raw_data):
-            if d['price'] > 0:
-                result.append({
-                    **d,
-                    'ema20': ema20[i] if ema20[i] is not None else d['price'],
-                    'ema50': ema50[i] if ema50[i] is not None else d['price'],
-                    'ema100': ema100[i] if ema100[i] is not None else d['price']
-                })
-        
-        return result
+        # Merge back
+        for i, item in enumerate(processed):
+            item['ema20'] = ema20[i]
+            item['ema50'] = ema50[i]
+            
+        return processed
+
     except Exception as e:
-        raise Exception(f"Failed to fetch CBBI data: {str(e)}")
+        print(f"Error fetching CBBI: {e}")
+        raise e
 
-
-def get_effective_est_date():
-    """Get effective EST date based on CBBI posting schedule (7 AM EST)"""
-    now = datetime.now(EST_TIMEZONE)
-    if now.hour < CBBI_POSTING_HOUR:
-        # Before 7 AM EST, use yesterday's date
-        yesterday = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        yesterday = yesterday.replace(day=yesterday.day - 1)
-        return yesterday.strftime('%Y-%m-%d')
-    # After 7 AM EST, use today's date
-    return now.strftime('%Y-%m-%d')
-
-
-def calculate_daily_analysis(market_data, target_date, t1, t3):
-    """Calculate daily analysis for a specific date"""
-    if not market_data:
+def analyze_market(data, target_date):
+    # Find exact match for date
+    row = next((item for item in data if item['date'] == target_date), None)
+    
+    if not row:
+        # SAFETY: Do NOT fallback to latest. 
+        # If API doesn't have today's date, we must not trade based on yesterday.
+        print(f"⚠️ Data for {target_date} not yet available in API.")
         return None
+
+    price = row['price']
+    cbbi = row['cbbi']
+    ema20 = row.get('ema20')
+    ema50 = row.get('ema50')
     
-    # Find the data point for target_date
-    target_data = None
-    for data in market_data:
-        if data['date'] == target_date:
-            target_data = data
-            break
+    # Determine Zone
+    zone = 2
+    rec = 'neutral'
     
-    # If target date not found, use the latest available date (fallback)
-    if not target_data:
-        # Sort by date and get the most recent
-        sorted_data = sorted(market_data, key=lambda x: x['date'], reverse=True)
-        if sorted_data:
-            target_data = sorted_data[0]
-            print(f"⚠️  Target date {target_date} not found, using latest available date: {target_data['date']}")
-        else:
-            return None
-    
-    price = target_data['price']
-    cbbi = target_data['cbbi']
-    ema20 = target_data.get('ema20')
-    ema50 = target_data.get('ema50')
-    ema100 = target_data.get('ema100')
-    
-    # Determine zone
-    zone = 2  # Neutral
-    recommendation = 'neutral'
-    
-    # Zone 1 (Accumulation): Price < EMA50 & CBBI < t1
-    if ema50 and price < ema50 and cbbi < t1:
+    # Zone 1 logic: Price < EMA50 AND CBBI < T1
+    if ema50 and price < ema50 and cbbi < DEFAULT_T1:
         zone = 1
-        recommendation = 'accumulate'
-    # Zone 3 (Reduction): Price > EMA20 & CBBI > t3
-    elif ema20 and price > ema20 and cbbi > t3:
+        rec = 'accumulate'
+    # Zone 3 logic: Price > EMA20 AND CBBI > T3
+    elif ema20 and price > ema20 and cbbi > DEFAULT_T3:
         zone = 3
-        recommendation = 'reduce'
-    
-    # Calculate tier
-    if cbbi < 30:
-        tier = 1
-    elif cbbi < 50:
-        tier = 2
-    elif cbbi < 70:
-        tier = 3
-    elif cbbi < 85:
-        tier = 4
-    else:
-        tier = 5
-    
+        rec = 'reduce'
+
     return {
         'date': target_date,
         'zone': zone,
-        'recommendation': recommendation,
-        'tier': tier,
+        'recommendation': rec,
         'price': price,
-        'cbbi': cbbi,
-        'ema20': ema20,
-        'ema50': ema50,
-        'ema100': ema100
+        'cbbi': cbbi
     }
 
-
-def calculate_daily_contribution(zone, recommendation, base_dca, f1, f3):
-    """Calculate daily DCA contribution based on zone"""
-    if zone == 1 or recommendation == 'accumulate':
-        return base_dca * f1
-    elif zone == 2 or recommendation == 'neutral':
-        return base_dca
-    elif zone == 3 or recommendation == 'reduce':
-        return base_dca * f3
-    return base_dca
-
-
-def calculate_zone1_buy_amount(base_dca, f1, f3, reserve_cash):
-    """Calculate buy amount for Zone 1 (Accumulate)"""
-    fresh_input = base_dca * f1
-    drain_target = (base_dca * f3) + (reserve_cash / 15.0)
-    drain_amount = min(reserve_cash, drain_target)
-    return {
-        'fresh_input': fresh_input,
-        'drain_amount': drain_amount,
-        'total_buy_usd': fresh_input + drain_amount
-    }
-
-
-def calculate_zone2_buy_amount(base_dca):
-    """Calculate buy amount for Zone 2 (Neutral)"""
-    return {
-        'fresh_input': base_dca,
-        'drain_amount': 0,
-        'total_buy_usd': base_dca
-    }
-
-
-def calculate_zone3_buy_amount(base_dca, f3):
-    """Calculate buy amount for Zone 3 (Reduce)"""
-    return {
-        'fresh_input': base_dca * f3,
-        'drain_amount': 0,
-        'total_buy_usd': base_dca * f3
-    }
-
-
-def execute_alpaca_order(analysis, secrets, base_dca, f1, f3, sell_factor, dry_run=False):
-    """Execute Alpaca order based on analysis"""
-    # Initialize Alpaca client
-    trading_client = TradingClient(
-        api_key=secrets['api_key'],
-        secret_key=secrets['secret_key'],
-        paper=True if 'paper' in ALPACA_BASE_URL.lower() else False
-    )
-    
+def execute_strategy(analysis, client, dry_run=False):
     zone = analysis['zone']
-    recommendation = analysis['recommendation']
     
-    # Get account info
-    account = trading_client.get_account()
-    cash_reserve = float(account.cash)
+    # Get Account Info
+    acct = client.get_account()
+    cash = float(acct.cash)
     
-    # Get BTC position
-    positions = trading_client.get_all_positions()
-    btc_position = None
-    for pos in positions:
-        if TRADING_SYMBOL in pos.symbol:
-            btc_position = pos
-            break
-    
-    total_btc = float(btc_position.qty) if btc_position else 0.0
-    
-    # Calculate daily contribution
-    daily_contribution = calculate_daily_contribution(
-        zone, recommendation, base_dca, f1, f3
-    )
-    
-    results = {
-        'date': analysis['date'],
-        'zone': zone,
-        'recommendation': recommendation,
-        'cash_before': cash_reserve,
-        'btc_before': total_btc,
-        'daily_contribution': daily_contribution,
-        'actions': []
-    }
-    
-    # Execute based on zone
-    if zone == 1 or recommendation == 'accumulate':
-        calc = calculate_zone1_buy_amount(base_dca, f1, f3, cash_reserve)
-        results['calculation'] = calc
-        
-        if dry_run:
-            results['actions'].append({
-                'type': 'buy',
-                'amount': calc['total_buy_usd'],
-                'breakdown': {
-                    'from_daily_contribution': calc['fresh_input'],
-                    'from_reserve': calc['drain_amount']
-                },
-                'result': {
-                    'success': True,
-                    'dry_run': True,
-                    'message': f"DRY RUN: Would buy ${calc['total_buy_usd']:.2f} of {TRADING_SYMBOL}"
-                }
-            })
-        else:
-            if cash_reserve >= calc['total_buy_usd']:
-                order = trading_client.submit_order(
-                    order_data=MarketOrderRequest(
-                        symbol=TRADING_SYMBOL,
-                        notional=calc['total_buy_usd'],
-                        side=OrderSide.BUY,
-                        time_in_force=TimeInForce.GTC
-                    )
-                )
-                results['actions'].append({
-                    'type': 'buy',
-                    'amount': calc['total_buy_usd'],
-                    'breakdown': {
-                        'from_daily_contribution': calc['fresh_input'],
-                        'from_reserve': calc['drain_amount']
-                    },
-                    'result': {
-                        'success': True,
-                        'order_id': order.id,
-                        'status': order.status
-                    }
-                })
-            else:
-                shortfall = calc['total_buy_usd'] - cash_reserve
-                results['actions'].append({
-                    'type': 'buy',
-                    'amount': calc['total_buy_usd'],
-                    'result': {
-                        'success': False,
-                        'error': f"Insufficient cash. Need ${calc['total_buy_usd']:.2f}, have ${cash_reserve:.2f}"
-                    }
-                })
-    
-    elif zone == 2 or recommendation == 'neutral':
-        calc = calculate_zone2_buy_amount(base_dca)
-        results['calculation'] = calc
-        
-        if dry_run:
-            results['actions'].append({
-                'type': 'buy',
-                'amount': calc['total_buy_usd'],
-                'result': {
-                    'success': True,
-                    'dry_run': True,
-                    'message': f"DRY RUN: Would buy ${calc['total_buy_usd']:.2f} of {TRADING_SYMBOL}"
-                }
-            })
-        else:
-            if cash_reserve >= calc['total_buy_usd']:
-                order = trading_client.submit_order(
-                    order_data=MarketOrderRequest(
-                        symbol=TRADING_SYMBOL,
-                        notional=calc['total_buy_usd'],
-                        side=OrderSide.BUY,
-                        time_in_force=TimeInForce.GTC
-                    )
-                )
-                results['actions'].append({
-                    'type': 'buy',
-                    'amount': calc['total_buy_usd'],
-                    'result': {
-                        'success': True,
-                        'order_id': order.id,
-                        'status': order.status
-                    }
-                })
-    
-    elif zone == 3 or recommendation == 'reduce':
-        calc = calculate_zone3_buy_amount(base_dca, f3)
-        
-        if calc['total_buy_usd'] > 0:
-            if not dry_run and cash_reserve >= calc['total_buy_usd']:
-                order = trading_client.submit_order(
-                    order_data=MarketOrderRequest(
-                        symbol=TRADING_SYMBOL,
-                        notional=calc['total_buy_usd'],
-                        side=OrderSide.BUY,
-                        time_in_force=TimeInForce.GTC
-                    )
-                )
-                results['actions'].append({
-                    'type': 'buy',
-                    'amount': calc['total_buy_usd'],
-                    'result': {
-                        'success': True,
-                        'order_id': order.id
-                    }
-                })
-        
-        # Execute sell order
-        if total_btc > 0:
-            sell_qty = total_btc * (sell_factor / 100.0)
-            if dry_run:
-                results['actions'].append({
-                    'type': 'sell',
-                    'qty': sell_qty,
-                    'result': {
-                        'success': True,
-                        'dry_run': True,
-                        'message': f"DRY RUN: Would sell {sell_qty:.6f} {TRADING_SYMBOL}"
-                    }
-                })
-            else:
-                order = trading_client.submit_order(
-                    order_data=MarketOrderRequest(
-                        symbol=TRADING_SYMBOL,
-                        qty=sell_qty,
-                        side=OrderSide.SELL,
-                        time_in_force=TimeInForce.GTC
-                    )
-                )
-                results['actions'].append({
-                    'type': 'sell',
-                    'qty': sell_qty,
-                    'result': {
-                        'success': True,
-                        'order_id': order.id,
-                        'status': order.status
-                    }
-                })
-    
-    return results
-
-
-def store_results(analysis, execution_result, s3_bucket=None):
-    """Store results to S3 (optional)"""
-    if not s3_bucket:
-        return
-    
+    # Get Position
     try:
-        s3_client = get_s3_client()
-        if not s3_client:
-            return
-        
-        key = f"executions/{analysis['date']}.json"
-        data = {
-            'analysis': analysis,
-            'execution': execution_result,
-            'timestamp': datetime.now().isoformat()
-        }
-        s3_client.put_object(
-            Bucket=s3_bucket,
-            Key=key,
-            Body=json.dumps(data, indent=2),
-            ContentType='application/json'
-        )
-    except Exception as e:
-        print(f"Warning: Failed to store results to S3: {str(e)}")
+        # Note: Alpaca Crypto symbols might need normalization depending on feed
+        pos = client.get_all_positions()
+        btc_qty = next((float(p.qty) for p in pos if p.symbol == SYMBOL), 0.0)
+    except:
+        btc_qty = 0.0
 
+    print(f"💵 Cash: ${cash:.2f} | ₿ BTC: {btc_qty:.6f} | Zone: {zone}")
+
+    result_log = {
+        'action': 'none',
+        'amount': 0,
+        'zone': zone
+    }
+
+    # === ZONE 1: ACCUMULATE ===
+    if zone == 1:
+        fresh_input = DEFAULT_BASE_DCA * DEFAULT_F1
+        # Turbo Drain: (Base * F3) + (Cash / 15)
+        drain_amt = (DEFAULT_BASE_DCA * DEFAULT_F3) + (cash / 15.0)
+        total_buy = fresh_input + drain_amt
+        
+        # Round to 2 decimals for USD
+        total_buy = round(total_buy, 2)
+        
+        print(f"🚀 BUY SIGNAL: Fresh(${fresh_input}) + Drain(${drain_amt:.2f}) = ${total_buy}")
+
+        if cash >= total_buy:
+            if not dry_run:
+                order = client.submit_order(MarketOrderRequest(
+                    symbol=SYMBOL, notional=total_buy, side=OrderSide.BUY, time_in_force=TimeInForce.GTC
+                ))
+                result_log.update({'action': 'buy', 'amount': total_buy, 'id': str(order.id)})
+            else:
+                result_log.update({'action': 'buy_dry_run', 'amount': total_buy})
+        else:
+            print("❌ Insufficient Cash")
+            result_log['error'] = 'insufficient_cash'
+
+    # === ZONE 2: NEUTRAL ===
+    elif zone == 2:
+        amount = DEFAULT_BASE_DCA
+        print(f"⚖️ NEUTRAL: Standard DCA ${amount}")
+        
+        if cash >= amount:
+            if not dry_run:
+                order = client.submit_order(MarketOrderRequest(
+                    symbol=SYMBOL, notional=amount, side=OrderSide.BUY, time_in_force=TimeInForce.GTC
+                ))
+                result_log.update({'action': 'buy', 'amount': amount, 'id': str(order.id)})
+            else:
+                result_log.update({'action': 'buy_dry_run', 'amount': amount})
+
+    # === ZONE 3: REDUCE ===
+    elif zone == 3:
+        # Buy Logic (Usually 0)
+        buy_amt = DEFAULT_BASE_DCA * DEFAULT_F3
+        if buy_amt > 0 and cash >= buy_amt:
+             if not dry_run:
+                client.submit_order(MarketOrderRequest(
+                    symbol=SYMBOL, notional=buy_amt, side=OrderSide.BUY, time_in_force=TimeInForce.GTC
+                ))
+        
+        # Sell Logic
+        if btc_qty > 0:
+            # Round quantity to 8 decimals to prevent API errors
+            sell_qty = round(btc_qty * (DEFAULT_SELL_FACTOR / 100.0), 8)
+            
+            # Ensure not zero
+            if sell_qty > 0:
+                print(f"🔻 SELL SIGNAL: Selling {sell_qty} BTC")
+                if not dry_run:
+                    order = client.submit_order(MarketOrderRequest(
+                        symbol=SYMBOL, qty=sell_qty, side=OrderSide.SELL, time_in_force=TimeInForce.GTC
+                    ))
+                    result_log.update({'action': 'sell', 'qty': sell_qty, 'id': str(order.id)})
+                else:
+                    result_log.update({'action': 'sell_dry_run', 'qty': sell_qty})
+
+    return result_log
 
 def lambda_handler(event, context):
-    """Main Lambda handler"""
+    print("--- Starting AlphaRise Automation ---")
+    
+    # 1. Determine Date (UTC)
+    target_date = get_utc_date_str()
+    print(f"📅 Target Date (UTC): {target_date}")
+
+    # 2. Idempotency Check
+    if check_already_traded(target_date):
+        return {'statusCode': 200, 'body': 'Already traded today.'}
+
+    # 3. Fetch & Analyze
     try:
-        # Get configuration from environment or defaults
-        t1 = DEFAULT_T1
-        t3 = DEFAULT_T3
-        base_dca = DEFAULT_BASE_DCA
-        f1 = DEFAULT_F1
-        f3 = DEFAULT_F3
-        sell_factor = DEFAULT_SELL_FACTOR
-        dry_run = os.getenv('DRY_RUN', 'false').lower() == 'true'
-        
-        # Get effective date (EST-based)
-        effective_date = get_effective_est_date()
-        
-        # Fetch CBBI data
-        print(f"Fetching CBBI data for {effective_date}...")
-        market_data = fetch_cbbi_data()
-        
-        if not market_data:
-            return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'success': False,
-                    'error': 'No market data available'
-                })
-            }
-        
-        # Calculate daily analysis
-        print(f"Calculating daily analysis for {effective_date}...")
-        print(f"Available dates in data: {[d['date'] for d in market_data[-5:]]}")  # Show last 5 dates
-        analysis = calculate_daily_analysis(market_data, effective_date, t1, t3)
+        data = fetch_cbbi_data()
+        analysis = analyze_market(data, target_date)
         
         if not analysis:
-            available_dates = [d['date'] for d in market_data[-10:]]  # Show last 10 dates
-            return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'success': False,
-                    'error': f'No analysis data for {effective_date}. Available dates: {available_dates}'
-                })
-            }
-        
-        # Get secrets
-        print("Retrieving Alpaca API keys...")
-        secrets = get_secrets()
-        
-        # Execute Alpaca order
-        print(f"Executing strategy (Zone {analysis['zone']}, {analysis['recommendation']})...")
-        execution_result = execute_alpaca_order(
-            analysis, secrets, base_dca, f1, f3, sell_factor, dry_run
-        )
-        
-        # Store results (optional)
-        if S3_BUCKET_NAME:
-            store_results(analysis, execution_result, S3_BUCKET_NAME)
-        
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'success': True,
-                'dry_run': dry_run,
-                'analysis': analysis,
-                'execution': execution_result
-            }, indent=2)
-        }
-    
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'success': False,
-                'error': str(e)
-            })
-        }
+            return {'statusCode': 200, 'body': f'No data available for {target_date} yet.'}
+            
+        print(f"📊 Analysis: Zone {analysis['zone']} ({analysis['recommendation']})")
 
+    except Exception as e:
+        print(f"❌ Analysis Failed: {e}")
+        return {'statusCode': 500, 'body': str(e)}
+
+    # 4. Execute
+    dry_run = os.getenv('DRY_RUN', 'false').lower() == 'true'
+    
+    try:
+        client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True) # Set paper=False for live
+        result = execute_strategy(analysis, client, dry_run=dry_run)
+        
+        # 5. Store Result (Mark as done)
+        if S3_BUCKET_NAME and not dry_run and result.get('action') != 'none':
+            s3 = get_s3_client()
+            s3.put_object(
+                Bucket=S3_BUCKET_NAME,
+                Key=f"executions/{target_date}.json",
+                Body=json.dumps({'analysis': analysis, 'result': result})
+            )
+
+        return {'statusCode': 200, 'body': json.dumps(result)}
+
+    except Exception as e:
+        print(f"❌ Execution Failed: {e}")
+        return {'statusCode': 500, 'body': str(e)}

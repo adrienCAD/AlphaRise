@@ -1,39 +1,23 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual Environment
-venv/
-env/
-ENV/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# AWS
-lambda_function.zip
-.aws/
-
-# Environment
+--- Security (CRITICAL) ---
 .env
 .env.local
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# OS
 .DS_Store
-Thumbs.db
 
+--- Python Generated Files ---
+
+pycache/
+*.pyc
+
+--- Build Artifacts (From deploy.sh) ---
+build_package/
+lambda_function.zip
+
+--- Local Virtual Environments (If you use them) ---
+
+venv/
+env/
+.venv/
+
+--- Logs ---
+
+*.log
