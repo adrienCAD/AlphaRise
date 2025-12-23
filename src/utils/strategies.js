@@ -20,24 +20,26 @@ export const runStrategies = (
   // Init Strategies
   let s_vdca = {
     name: "V_DCA",
-    btc: initialBTC,
-    usd: initialCapital,
-    cash: 0,
+    btc: 0,  // Start with 0 BTC (will accumulate via strategy)
+    usd: 0,  // No contributions yet (will track daily contributions)
+    cash: initialCapital,  // Full amount starts as dry powder reserve
     interest: 0,
     val: [initialCapital],
-    investedHistory: [initialCapital],
+    investedHistory: [0],
     returns: [],
-    cashHistory: [0],
+    cashHistory: [initialCapital],  // Show initial cash reserve
     color: '#ec4899'
   };
 
   let s_dca = {
     name: "Standard DCA",
-    btc: initialBTC,
-    usd: initialCapital,
+    btc: 0,  // Start with 0 BTC (same as V_DCA)
+    usd: 0,  // Track contributions
+    cash: initialCapital,  // Start with same cash reserve as V_DCA
     val: [initialCapital],
-    investedHistory: [initialCapital],
+    investedHistory: [0],
     returns: [],
+    cashHistory: [initialCapital],  // Track cash reserve
     color: '#3b82f6'
   };
 
@@ -115,26 +117,37 @@ export const runStrategies = (
   });
 
   // 2. Scaled DCA
-  const totalFreshUSD = s_vdca.usd - initialCapital;
+  const totalFreshUSD = s_vdca.usd;  // Total contributions from V_DCA (excluding initial capital)
   const scaledDailyDCA = totalFreshUSD / (subset.length - 1 || 1);
 
   subset.forEach((day, idx) => {
     if (idx === 0) return;
 
+    // Apply daily interest to cash reserve (same as V_DCA)
+    const dailyInt = s_dca.cash * DAILY_INTEREST;
+    s_dca.cash += dailyInt;
+
     const prevVal = s_dca.val[s_dca.val.length - 1];
+    
+    // Invest fixed amount each day
     s_dca.btc += scaledDailyDCA / day.price;
     s_dca.usd += scaledDailyDCA;
-    const newVal = s_dca.btc * day.price;
+    
+    // Portfolio value = BTC value + cash reserve
+    const newVal = (s_dca.btc * day.price) + s_dca.cash;
     s_dca.val.push(newVal);
     s_dca.investedHistory.push(s_dca.usd);
+    s_dca.cashHistory.push(s_dca.cash);
 
     const dailyRet = ((newVal - scaledDailyDCA) / prevVal) - 1;
     s_dca.returns.push(dailyRet);
   });
 
-  // 3. Smart HODL
-  const hodlBTC = totalFreshUSD / startPrice;
-  const totalHodlBTC = initialBTC + hodlBTC;
+  // 3. Smart HODL (starts with same initial capital as V_DCA, converts everything to BTC)
+  // Convert initial capital at start price + all contributions spread over time
+  const hodlInitialBTC = initialCapital / startPrice;  // Initial capital converted to BTC at start
+  const hodlContributionBTC = totalFreshUSD / startPrice;  // Fresh contributions
+  const totalHodlBTC = hodlInitialBTC + hodlContributionBTC;
   const hodlVals = subset.map(d => totalHodlBTC * d.price);
   const hodlInv = subset.map(d => s_vdca.usd);
   let hodlReturns = [];
