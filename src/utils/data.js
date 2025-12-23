@@ -18,13 +18,74 @@ function calcEMA(arr, n) {
   return ema;
 }
 
-// Fetch raw data from API
+// Fetch raw data from API with fallback mechanisms
 async function fetchFromAPI() {
+  const URL = 'https://colintalkscrypto.com/cbbi/data/latest.json';
+  
+  // Browser-like headers to avoid 406/403 errors
+  const headers = {
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://colintalkscrypto.com/',
+    'Origin': 'https://colintalkscrypto.com'
+  };
+
+  let rawResponse;
+  
   try {
-    const PROXY = 'https://corsproxy.io/?';
-    const URL = 'https://colintalkscrypto.com/cbbi/data/latest.json';
-    const response = await fetch(PROXY + encodeURIComponent(URL));
-    const data = await response.json();
+    // Strategy 1: Try direct fetch first
+    console.log('Attempting direct fetch from CBBI API...');
+    rawResponse = await fetch(URL, { 
+      headers,
+      mode: 'cors',
+      credentials: 'omit'
+    });
+    
+    if (!rawResponse.ok) {
+      throw new Error(`Direct fetch failed with status ${rawResponse.status}`);
+    }
+    
+    console.log('✅ Direct fetch successful');
+  } catch (directError) {
+    console.warn('Direct fetch failed:', directError.message);
+    
+    try {
+      // Strategy 2: Try CORS proxy
+      console.log('Falling back to CORS proxy...');
+      const PROXY = 'https://corsproxy.io/?';
+      rawResponse = await fetch(PROXY + encodeURIComponent(URL), {
+        headers,
+        mode: 'cors'
+      });
+      
+      if (!rawResponse.ok) {
+        throw new Error(`CORS proxy failed with status ${rawResponse.status}`);
+      }
+      
+      console.log('✅ CORS proxy fetch successful');
+    } catch (proxyError) {
+      console.error('CORS proxy also failed:', proxyError.message);
+      
+      try {
+        // Strategy 3: Try alternative CORS proxy
+        console.log('Trying alternative CORS proxy (allorigins.win)...');
+        const ALT_PROXY = 'https://api.allorigins.win/raw?url=';
+        rawResponse = await fetch(ALT_PROXY + encodeURIComponent(URL));
+        
+        if (!rawResponse.ok) {
+          throw new Error(`Alternative proxy failed with status ${rawResponse.status}`);
+        }
+        
+        console.log('✅ Alternative proxy fetch successful');
+      } catch (altProxyError) {
+        console.error('All fetch strategies failed:', altProxyError.message);
+        return [];
+      }
+    }
+  }
+
+  try {
+    const data = await rawResponse.json();
 
     const prices = data.Price || data.BTC || {};
     const confidence = data.Confidence || data.CBBI || {};
@@ -52,8 +113,8 @@ async function fetchFromAPI() {
       ema100: e100[i] || d.price
     })).filter(d => d.price > 0);
 
-  } catch (err) {
-    console.error('Error fetching from API:', err);
+  } catch (parseError) {
+    console.error('Error parsing API response:', parseError);
     return [];
   }
 }
