@@ -2,22 +2,15 @@
 .env
 .env.local
 .DS_Store
-
 --- Python Generated Files ---
-
 pycache/
 *.pyc
-
 --- Build Artifacts (From deploy.sh) ---
 build_package/
 lambda_function.zip
-
 --- Local Virtual Environments (If you use them) ---
-
 venv/
 env/
 .venv/
-
 --- Logs ---
-
 *.log
